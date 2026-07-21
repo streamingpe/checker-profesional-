@@ -1,0 +1,5 @@
+proxy1.com:8080
+proxy2.com:3128
+192.168.1.1:8080
+proxy.server.net:9090
+vpn-proxy.net:1080
