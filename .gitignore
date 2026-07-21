@@ -1,0 +1,32 @@
+# Compilación
+build/
+dist/
+*.exe
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos locales
+*.log
+combos.txt
+proxies.txt
+resultados.json
+.DS_Store
+
+# Temporal
+*.tmp
+temp/
