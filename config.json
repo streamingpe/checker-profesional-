@@ -1,0 +1,31 @@
+{
+  "nombre": "VTR Prime Video Checker",
+  "version": "1.0.0",
+  "descripcion": "Checker profesional para validar cuentas VTR y verificar acceso a Prime Video",
+  "autor": "streamingpe",
+  "licencia": "MIT",
+  
+  "configuracion": {
+    "timeout_conexion": 15,
+    "timeout_captcha": 150,
+    "reintentos": 3,
+    "delay_entre_verificaciones": 0.5,
+    "max_threads": 5
+  },
+  
+  "api": {
+    "vtr_auth": "https://accounts.vtr.com/commonauth",
+    "vtr_oauth": "https://accounts.vtr.com/oauth2/authorize",
+    "prime_api": "https://affiliates-api.tbxapis.com/v1/partnergw/affiliates/subscriptions",
+    "captcha_sitekey": "6Ldz5XEaAAAAAHyzCrh1TK53A22e-FSx0ukqyhmS",
+    "captcha_solver_local": "http://localhost:407/token"
+  },
+  
+  "rsa_public_key": "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANgDJ1D8IOc8ZQpzJCnLujRc9Dt06ckrr1F8zTivMgAmFXlUv6Skbey+DZ4nZ/SAQgTFLpMm9i1/2BNabqFa5vsCAwEAAQ==",
+  
+  "resultados": {
+    "HITS": "Prime Video disponible (Pendiente de activación)",
+    "CUSTOM": "Estado especial (Activado, Sin beneficios)",
+    "BAD": "Credenciales inválidas o error"
+  }
+}
